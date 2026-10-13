@@ -30,6 +30,8 @@ class MainActivity : ComponentActivity() {
     private var contrast = 1f
     private var saturation = 1f
     private var warmth = 0f
+    private var sharpness = 0f
+    private var vignette = 0f
 
     private val pickImage = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -37,7 +39,7 @@ class MainActivity : ComponentActivity() {
         if (uri != null) try {
             contentResolver.openInputStream(uri)?.use { original = BitmapFactory.decodeStream(it) }
             if (original == null) throw IOException("Image decoder returned no image")
-            rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f
+            rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f; sharpness = 0f; vignette = 0f
             renderPreview()
             status.text = "Photo loaded — edits stay on your device."
         } catch (_: Exception) { toast("Could not open this photo.") }
@@ -78,11 +80,14 @@ class MainActivity : ComponentActivity() {
         controls.addView(sliderRow("Contrast", 50, 200, 100) { contrast = it / 100f; renderPreview() })
         controls.addView(sliderRow("Saturation", 0, 200, 100) { saturation = it / 100f; renderPreview() })
         controls.addView(sliderRow("Warmth", -50, 50, 0) { warmth = it.toFloat(); renderPreview() })
+        controls.addView(sliderRow("Sharpen", 0, 100, 0) { sharpness = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Vignette", -100, 100, 0) { vignette = it / 100f; renderPreview() })
         val transformRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         transformRow.addView(button("Rotate") { rotation = (rotation + 90f) % 360f; renderPreview() }, weighted())
         transformRow.addView(button("Flip") { flipped = !flipped; renderPreview() }, weighted())
         transformRow.addView(button("Reset") {
             brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f
+            sharpness = 0f; vignette = 0f
             rotation = 0f; flipped = false; renderPreview(); toast("Edits reset")
         }, weighted())
         controls.addView(transformRow)
@@ -175,10 +180,17 @@ class MainActivity : ComponentActivity() {
             }
             Canvas(corrected).drawBitmap(base, 0f, 0f, paint)
         }
+        var effected = corrected
+        if (sharpness > 0f) {
+            val sharpened = ImageAlgorithms.sharpen(effected, sharpness)
+            if (effected !== sharpened && !effected.isRecycled) effected.recycle()
+            effected = sharpened
+        }
+        if (vignette != 0f) ImageAlgorithms.vignette(effected, vignette)
         val transform = Matrix().apply { postRotate(rotation); if (flipped) postScale(-1f, 1f) }
-        val result = Bitmap.createBitmap(corrected, 0, 0, corrected.width, corrected.height, transform, true)
+        val result = Bitmap.createBitmap(effected, 0, 0, effected.width, effected.height, transform, true)
         if (base !== source && !base.isRecycled) base.recycle()
-        if (corrected !== result && !corrected.isRecycled) corrected.recycle()
+        if (effected !== result && !effected.isRecycled) effected.recycle()
         return result
     }
 
