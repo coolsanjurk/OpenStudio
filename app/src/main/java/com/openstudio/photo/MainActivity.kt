@@ -2,6 +2,7 @@ package com.openstudio.photo
 
 import androidx.activity.ComponentActivity
 import android.content.ContentValues
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -35,6 +36,7 @@ class MainActivity : ComponentActivity() {
     ) { uri: Uri? ->
         if (uri != null) try {
             contentResolver.openInputStream(uri)?.use { original = BitmapFactory.decodeStream(it) }
+            if (original == null) throw IOException("Image decoder returned no image")
             rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f
             renderPreview()
             status.text = "Photo loaded — edits stay on your device."
@@ -62,6 +64,7 @@ class MainActivity : ComponentActivity() {
         buttons.addView(button("Open photo") { pickImage.launch("image/*") }, weighted())
         buttons.addView(button("Save copy") { saveImage() }, weighted())
         root.addView(buttons)
+        root.addView(button("Privacy / leak check") { runPrivacyCheck() }, LinearLayout.LayoutParams(-1, dp(48)))
         preview = ImageView(this).apply {
             adjustViewBounds = true; scaleType = ImageView.ScaleType.FIT_CENTER
             setBackgroundColor(Color.rgb(32, 35, 42)); contentDescription = "Photo preview"
@@ -86,6 +89,31 @@ class MainActivity : ComponentActivity() {
         scroll.addView(controls)
         root.addView(scroll, LinearLayout.LayoutParams(-1, dp(255)))
         setContentView(root)
+    }
+
+    /** Fail-closed privacy smoke check for the APK's key platform-level safeguards. */
+    private fun runPrivacyCheck() {
+        val checks = listOf(
+            "No Android Internet permission" to
+                (checkSelfPermission(android.Manifest.permission.INTERNET) != android.content.pm.PackageManager.PERMISSION_GRANTED),
+            "Android backup disabled" to
+                (applicationInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP == 0),
+            "Cleartext network traffic disabled" to
+                (applicationInfo.flags and ApplicationInfo.FLAG_USES_CLEARTEXT_TRAFFIC == 0)
+        )
+        val passed = checks.all { it.second }
+        val report = checks.joinToString("\n") { (label, ok) -> "${if (ok) "PASS" else "FAIL"} — $label" } +
+            "\n\n" + if (passed) {
+                "Basic privacy checks passed. This is not a guarantee against every possible leak."
+            } else {
+                "Privacy check FAILED. Do not use this build with private photos; report this issue."
+            }
+        status.text = if (passed) "Privacy check passed • 3/3" else "PRIVACY CHECK FAILED"
+        android.app.AlertDialog.Builder(this)
+            .setTitle(if (passed) "Privacy check passed" else "Privacy warning")
+            .setMessage(report)
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun sliderRow(label: String, min: Int, max: Int, initial: Int, changed: (Int) -> Unit): View {
