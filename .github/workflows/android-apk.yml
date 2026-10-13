@@ -45,7 +45,8 @@ jobs:
       - name: Build Rust native libraries
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/26.3.11579264"
-          cargo ndk -t arm64-v8a -t x86_64 -o app/src/main/jniLibs build --release --manifest-path rust/openstudio_native/Cargo.toml
+          cd rust/openstudio_native
+          cargo ndk -t arm64-v8a -t x86_64 -o ../../app/src/main/jniLibs build --release
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
