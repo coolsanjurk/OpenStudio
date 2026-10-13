@@ -56,7 +56,7 @@ except OSError as exc:
 cargo_path = ROOT / "rust/openstudio_native/Cargo.toml"
 if cargo_path.exists():
     cargo = cargo_path.read_text(encoding="utf-8")
-    forbidden_rust = [r"\\b(reqwest|ureq|hyper|isahc)\\b"]
+    forbidden_rust = [r"\b(reqwest|ureq|hyper|isahc)\b"]
     rust_matches = [pattern for pattern in forbidden_rust if re.search(pattern, cargo, re.IGNORECASE)]
     checks.append(("Rust crate has no known HTTP client dependency", not rust_matches))
     if rust_matches:
