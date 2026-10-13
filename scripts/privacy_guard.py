@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fail-closed privacy guard for OpenStudio's current offline-only MVP.
+"""Fail-closed privacy guard for OpenStudio's offline-only Android MVP.
 
-This is a focused configuration check, not a full security audit. It intentionally
-fails the CI job if network access, Android backup, or cleartext traffic is enabled.
+This is a focused static configuration check, not a complete security audit.
+It rejects common Android network permissions, known networking/telemetry
+dependencies, and direct network APIs in application source.
 """
 from pathlib import Path
 import re
@@ -19,10 +20,17 @@ try:
     root = ET.parse(manifest_path).getroot()
     app = root.find("application")
     permissions = {node.get(ANDROID + "name") for node in root.findall("uses-permission")}
-    internet = "android.permission.INTERNET" in permissions
-    checks.append(("Manifest has no INTERNET permission", not internet))
-    if internet:
-        errors.append("INTERNET permission is present; offline-only privacy guard rejects it.")
+    forbidden_permissions = {
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_NETWORK_STATE",
+        "android.permission.CHANGE_WIFI_STATE",
+    }
+    found_permissions = sorted(p for p in permissions if p in forbidden_permissions)
+    checks.append(("Manifest excludes network-related permissions", not found_permissions))
+    if found_permissions:
+        errors.append("Offline-only build contains forbidden permissions: " + ", ".join(found_permissions))
     if app is None:
         errors.append("AndroidManifest.xml has no <application> element.")
     else:
@@ -37,26 +45,60 @@ try:
 except (ET.ParseError, OSError) as exc:
     errors.append(f"Could not parse Android manifest: {exc}")
 
-gradle_path = ROOT / "app/build.gradle.kts"
+# These are deliberately conservative: adding a network-capable API requires
+# an explicit privacy review rather than silently entering the offline MVP.
+dependency_path = ROOT / "app/build.gradle.kts"
 try:
-    gradle = gradle_path.read_text(encoding="utf-8")
-    # Block common networking/telemetry libraries from entering this offline MVP silently.
-    forbidden = [
+    gradle = dependency_path.read_text(encoding="utf-8")
+    forbidden_dependencies = [
         r"\b(okhttp|retrofit|ktor-client|firebase-analytics|firebase-crashlytics|sentry-android|mixpanel)\b",
         r"com\.google\.android\.gms:play-services-analytics",
+        r"com\.squareup\.okhttp3:",
+        r"com\.squareup\.retrofit2:",
     ]
-    matches = [pattern for pattern in forbidden if re.search(pattern, gradle, re.IGNORECASE)]
+    matches = [pattern for pattern in forbidden_dependencies if re.search(pattern, gradle, re.IGNORECASE)]
     checks.append(("No known network/analytics SDK dependencies", not matches))
     if matches:
         errors.append("Potential network/analytics dependency found in app/build.gradle.kts.")
 except OSError as exc:
     errors.append(f"Could not read app Gradle file: {exc}")
 
+source_roots = [
+    ROOT / "app/src/main/java",
+    ROOT / "app/src/main/kotlin",
+    ROOT / "rust/openstudio_native/src",
+]
+network_api_patterns = [
+    r"\bjava\.net\.(?:URL|URI|Socket|ServerSocket|HttpURLConnection)\b",
+    r"\b(?:okhttp3|retrofit2|io\.ktor\.client|org\.apache\.http)\b",
+    r"\b(?:HttpURLConnection|HttpsURLConnection|Socket|ServerSocket)\s*\(",
+    r"\b(?:FirebaseAnalytics|FirebaseCrashlytics|Sentry|Mixpanel)\b",
+    r"\b(?:reqwest|ureq|hyper|isahc)::",
+]
+source_matches = []
+for source_root in source_roots:
+    if not source_root.exists():
+        continue
+    for path in source_root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".kt", ".java", ".rs"}:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            errors.append(f"Could not read source file: {path.relative_to(ROOT)}")
+            continue
+        for pattern in network_api_patterns:
+            if re.search(pattern, content):
+                source_matches.append(f"{path.relative_to(ROOT)} matches {pattern}")
+                break
+checks.append(("No known direct networking/telemetry APIs in application source", not source_matches))
+if source_matches:
+    errors.append("Potential network/telemetry API found: " + "; ".join(source_matches))
 
 cargo_path = ROOT / "rust/openstudio_native/Cargo.toml"
 if cargo_path.exists():
     cargo = cargo_path.read_text(encoding="utf-8")
-    forbidden_rust = [r"\\b(reqwest|ureq|hyper|isahc)\\b"]
+    forbidden_rust = [r"\b(reqwest|ureq|hyper|isahc)\b"]
     rust_matches = [pattern for pattern in forbidden_rust if re.search(pattern, cargo, re.IGNORECASE)]
     checks.append(("Rust crate has no known HTTP client dependency", not rust_matches))
     if rust_matches:

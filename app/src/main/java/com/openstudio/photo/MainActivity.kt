@@ -24,26 +24,82 @@ class MainActivity : ComponentActivity() {
     private lateinit var preview: ImageView
     private lateinit var status: TextView
     private var original: Bitmap? = null
+    // Keep track of the generated preview so its native pixel memory can be released
+    // when the next slider movement produces a replacement.
+    private var renderedPreview: Bitmap? = null
     private var rotation = 0f
     private var flipped = false
     private var brightness = 0f
     private var contrast = 1f
     private var saturation = 1f
     private var warmth = 0f
+    private var sharpness = 0f
+    private var vignette = 0f
+    private var cropRatio: Float? = null
+    private val textLayers = mutableListOf<String>()
+    private val editHistory = EditHistory<EditorState>()
+
+    private data class EditorState(
+        val rotation: Float, val flipped: Boolean, val brightness: Float, val contrast: Float,
+        val saturation: Float, val warmth: Float, val sharpness: Float, val vignette: Float,
+        val cropRatio: Float?, val textLayers: List<String>
+    )
+
+    private fun currentEditorState() = EditorState(
+        rotation, flipped, brightness, contrast, saturation, warmth, sharpness, vignette,
+        cropRatio, textLayers.toList()
+    )
+
+    private fun recordUndo() {
+        if (::preview.isInitialized && original != null) editHistory.record(currentEditorState())
+    }
+
+    private fun applyEditorState(state: EditorState) {
+        rotation = state.rotation; flipped = state.flipped; brightness = state.brightness
+        contrast = state.contrast; saturation = state.saturation; warmth = state.warmth
+        sharpness = state.sharpness; vignette = state.vignette; cropRatio = state.cropRatio
+        textLayers.clear(); textLayers.addAll(state.textLayers)
+        renderPreview()
+        status.text = "Edit restored"
+    }
+
+    private fun undoEdit() {
+        val previous = editHistory.undo(currentEditorState())
+        if (previous == null) toast("Nothing to undo.") else applyEditorState(previous)
+    }
+
+    private fun redoEdit() {
+        val next = editHistory.redo(currentEditorState())
+        if (next == null) toast("Nothing to redo.") else applyEditorState(next)
+    }
 
     private val pickImage = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) try {
-            contentResolver.openInputStream(uri)?.use { original = BitmapFactory.decodeStream(it) }
-            if (original == null) throw IOException("Image decoder returned no image")
-            rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f
+            val decoded = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                ?: throw IOException("Image decoder returned no image")
+            val previousOriginal = original
+            original = decoded
+            rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f; sharpness = 0f; vignette = 0f; cropRatio = null; textLayers.clear(); editHistory.clear()
             renderPreview()
+            if (previousOriginal != null && previousOriginal !== decoded && !previousOriginal.isRecycled) previousOriginal.recycle()
             status.text = "Photo loaded — edits stay on your device."
         } catch (_: Exception) { toast("Could not open this photo.") }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); buildUi() }
+
+    override fun onDestroy() {
+        // Avoid retaining full-size pixel buffers after the editor is closed.
+        val previewBitmap = renderedPreview
+        if (previewBitmap != null && previewBitmap !== original && !previewBitmap.isRecycled) previewBitmap.recycle()
+        renderedPreview = null
+        val source = original
+        if (source != null && !source.isRecycled) source.recycle()
+        original = null
+        super.onDestroy()
+    }
 
     private fun buildUi() {
         val root = LinearLayout(this).apply {
@@ -74,18 +130,30 @@ class MainActivity : ComponentActivity() {
         })
         val scroll = ScrollView(this)
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        controls.addView(sliderRow("Brightness", -100, 100, 0) { brightness = it / 100f; renderPreview() })
-        controls.addView(sliderRow("Contrast", 50, 200, 100) { contrast = it / 100f; renderPreview() })
-        controls.addView(sliderRow("Saturation", 0, 200, 100) { saturation = it / 100f; renderPreview() })
-        controls.addView(sliderRow("Warmth", -50, 50, 0) { warmth = it.toFloat(); renderPreview() })
+        controls.addView(sliderRow("Brightness", -100, 100, 0, beforeChange = { recordUndo() }) { brightness = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Contrast", 50, 200, 100, beforeChange = { recordUndo() }) { contrast = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Saturation", 0, 200, 100, beforeChange = { recordUndo() }) { saturation = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Warmth", -50, 50, 0, beforeChange = { recordUndo() }) { warmth = it.toFloat(); renderPreview() })
+        controls.addView(sliderRow("Sharpen", 0, 100, 0, beforeChange = { recordUndo() }) { sharpness = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Vignette", -100, 100, 0, beforeChange = { recordUndo() }) { vignette = it / 100f; renderPreview() })
         val transformRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        transformRow.addView(button("Rotate") { rotation = (rotation + 90f) % 360f; renderPreview() }, weighted())
-        transformRow.addView(button("Flip") { flipped = !flipped; renderPreview() }, weighted())
+        transformRow.addView(button("Rotate") { recordUndo(); rotation = (rotation + 90f) % 360f; renderPreview() }, weighted())
+        transformRow.addView(button("Flip") { recordUndo(); flipped = !flipped; renderPreview() }, weighted())
         transformRow.addView(button("Reset") {
+            recordUndo()
             brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f
+            sharpness = 0f; vignette = 0f; cropRatio = null; textLayers.clear()
             rotation = 0f; flipped = false; renderPreview(); toast("Edits reset")
         }, weighted())
         controls.addView(transformRow)
+        val historyRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        historyRow.addView(button("Undo") { undoEdit() }, weighted())
+        historyRow.addView(button("Redo") { redoEdit() }, weighted())
+        controls.addView(historyRow)
+        val creativeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        creativeRow.addView(button("Crop") { showCropOptions() }, weighted())
+        creativeRow.addView(button("Add text") { addTextLayer() }, weighted())
+        controls.addView(creativeRow)
         scroll.addView(controls)
         root.addView(scroll, LinearLayout.LayoutParams(-1, dp(255)))
         setContentView(root)
@@ -116,7 +184,7 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 
-    private fun sliderRow(label: String, min: Int, max: Int, initial: Int, changed: (Int) -> Unit): View {
+    private fun sliderRow(label: String, min: Int, max: Int, initial: Int, beforeChange: () -> Unit = {}, changed: (Int) -> Unit): View {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val caption = TextView(this).apply { text = "$label: $initial"; textSize = 14f; setTextColor(Color.WHITE) }
         val seek = SeekBar(this).apply {
@@ -126,7 +194,7 @@ class MainActivity : ComponentActivity() {
                     val value = progress + min
                     caption.text = "$label: $value"; changed(value)
                 }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStartTrackingTouch(sb: SeekBar?) { beforeChange() }
                 override fun onStopTrackingTouch(sb: SeekBar?) {}
             })
         }
@@ -135,9 +203,29 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun renderPreview() {
-        val source = original ?: run { preview.setImageDrawable(null); status.text = "Tap Open photo to begin."; return }
-        try { preview.setImageBitmap(processedBitmap(source, 1600)) }
-        catch (_: Exception) { preview.setImageBitmap(source); status.text = "Preview issue — original photo retained." }
+        val source = original ?: run {
+            preview.setImageDrawable(null)
+            releaseRenderedPreview()
+            status.text = "Tap Open photo to begin."
+            return
+        }
+        try {
+            val next = processedBitmap(source, 1600)
+            val previous = renderedPreview
+            preview.setImageBitmap(next)
+            renderedPreview = next
+            if (previous != null && previous !== source && previous !== next && !previous.isRecycled) previous.recycle()
+        } catch (_: Exception) {
+            preview.setImageBitmap(source)
+            releaseRenderedPreview()
+            status.text = "Preview issue — original photo retained."
+        }
+    }
+
+    private fun releaseRenderedPreview() {
+        val previous = renderedPreview
+        renderedPreview = null
+        if (previous != null && previous !== original && !previous.isRecycled) previous.recycle()
     }
 
     private fun processedBitmap(source: Bitmap, maxDimension: Int? = null): Bitmap {
@@ -175,19 +263,78 @@ class MainActivity : ComponentActivity() {
             }
             Canvas(corrected).drawBitmap(base, 0f, 0f, paint)
         }
+        var effected = corrected
+        if (sharpness > 0f) {
+            val sharpened = ImageAlgorithms.sharpen(effected, sharpness)
+            if (effected !== sharpened && !effected.isRecycled) effected.recycle()
+            effected = sharpened
+        }
+        if (vignette != 0f) ImageAlgorithms.vignette(effected, vignette)
         val transform = Matrix().apply { postRotate(rotation); if (flipped) postScale(-1f, 1f) }
-        val result = Bitmap.createBitmap(corrected, 0, 0, corrected.width, corrected.height, transform, true)
+        var result = Bitmap.createBitmap(effected, 0, 0, effected.width, effected.height, transform, true)
         if (base !== source && !base.isRecycled) base.recycle()
-        if (corrected !== result && !corrected.isRecycled) corrected.recycle()
+        if (effected !== result && !effected.isRecycled) effected.recycle()
+        val ratio = cropRatio
+        if (ratio != null && ratio > 0f) {
+            val currentRatio = result.width.toFloat() / result.height
+            val cropW: Int
+            val cropH: Int
+            if (currentRatio > ratio) { cropH = result.height; cropW = (cropH * ratio).toInt().coerceIn(1, result.width) }
+            else { cropW = result.width; cropH = (cropW / ratio).toInt().coerceIn(1, result.height) }
+            val cropped = Bitmap.createBitmap(result, (result.width - cropW) / 2, (result.height - cropH) / 2, cropW, cropH)
+            if (cropped !== result && !result.isRecycled) result.recycle()
+            result = cropped
+        }
+        if (textLayers.isNotEmpty()) {
+            val withText = result.copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = Canvas(withText)
+            textLayers.forEachIndexed { index, label ->
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.WHITE
+                    textSize = maxOf(28f, result.width * 0.055f)
+                    textAlign = Paint.Align.CENTER
+                    setShadowLayer(4f, 2f, 2f, Color.BLACK)
+                }
+                canvas.drawText(label, result.width / 2f, result.height * (0.8f - index * 0.08f), paint)
+            }
+            if (!result.isRecycled) result.recycle()
+            result = withText
+        }
         return result
+    }
+
+    private fun showCropOptions() {
+        val options = arrayOf("Reset crop", "Square 1:1", "Portrait 4:5", "Landscape 16:9")
+        android.app.AlertDialog.Builder(this).setTitle("Center crop").setItems(options) { _, which ->
+            recordUndo()
+            cropRatio = when (which) { 0 -> null; 1 -> 1f; 2 -> 4f / 5f; else -> 16f / 9f }
+            renderPreview()
+        }.show()
+    }
+
+    private fun addTextLayer() {
+        val input = EditText(this).apply { hint = "Text to overlay on photo" }
+        android.app.AlertDialog.Builder(this).setTitle("Add text layer").setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Add") { _, _ ->
+                val value = input.text.toString().trim()
+                if (value.isNotEmpty()) {
+                    recordUndo()
+                    textLayers.add(value)
+                    renderPreview()
+                    status.text = "Text overlay added • " + textLayers.size + " layer(s)"
+                }
+            }.show()
     }
 
     private fun saveImage() {
         val source = original ?: run { toast("Open a photo first."); return }
         status.text = "Saving photo…"
         Thread {
+            var bitmap: Bitmap? = null
             try {
-                val bitmap = processedBitmap(source)
+                val outputBitmap = processedBitmap(source)
+                bitmap = outputBitmap
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, "OpenStudio_" + System.currentTimeMillis() + ".jpg")
                     put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
@@ -197,14 +344,16 @@ class MainActivity : ComponentActivity() {
                 val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                     ?: throw IOException("Could not create image")
                 contentResolver.openOutputStream(uri)?.use {
-                    if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)) throw IOException("Image encoding failed")
+                    if (!outputBitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)) throw IOException("Image encoding failed")
                 } ?: throw IOException("Could not write image")
                 values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
                 contentResolver.update(uri, values, null, null)
-                if (bitmap !== source && !bitmap.isRecycled) bitmap.recycle()
                 runOnUiThread { status.text = "Saved to Pictures/OpenStudio"; toast("Photo saved successfully") }
             } catch (e: Exception) {
                 runOnUiThread { status.text = "Save failed"; toast("Could not save: " + (e.message ?: "unknown error")) }
+            } finally {
+                val savedBitmap = bitmap
+                if (savedBitmap != null && savedBitmap !== source && !savedBitmap.isRecycled) savedBitmap.recycle()
             }
         }.start()
     }
