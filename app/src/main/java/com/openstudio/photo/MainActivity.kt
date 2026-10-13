@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
         if (uri != null) try {
             contentResolver.openInputStream(uri)?.use { original = BitmapFactory.decodeStream(it) }
             if (original == null) throw IOException("Image decoder returned no image")
-            rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f; sharpness = 0f; vignette = 0f
+            rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f; sharpness = 0f; vignette = 0f; cropRatio = null; textLayers.clear()
             renderPreview()
             status.text = "Photo loaded — edits stay on your device."
         } catch (_: Exception) { toast("Could not open this photo.") }
@@ -89,7 +89,7 @@ class MainActivity : ComponentActivity() {
         transformRow.addView(button("Flip") { flipped = !flipped; renderPreview() }, weighted())
         transformRow.addView(button("Reset") {
             brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f
-            sharpness = 0f; vignette = 0f
+            sharpness = 0f; vignette = 0f; cropRatio = null; textLayers.clear()
             rotation = 0f; flipped = false; renderPreview(); toast("Edits reset")
         }, weighted())
         controls.addView(transformRow)
