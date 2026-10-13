@@ -1,6 +1,6 @@
 package com.openstudio.photo
 
-import android.app.Activity
+import androidx.activity.ComponentActivity
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -19,7 +19,7 @@ import android.widget.*
 import java.io.IOException
 import kotlin.math.roundToInt
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private lateinit var preview: ImageView
     private lateinit var status: TextView
     private var original: Bitmap? = null
