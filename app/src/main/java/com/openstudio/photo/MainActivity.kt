@@ -32,6 +32,8 @@ class MainActivity : ComponentActivity() {
     private var warmth = 0f
     private var sharpness = 0f
     private var vignette = 0f
+    private var cropRatio: Float? = null
+    private val textLayers = mutableListOf<String>()
 
     private val pickImage = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -91,6 +93,10 @@ class MainActivity : ComponentActivity() {
             rotation = 0f; flipped = false; renderPreview(); toast("Edits reset")
         }, weighted())
         controls.addView(transformRow)
+        val creativeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        creativeRow.addView(button("Crop") { showCropOptions() }, weighted())
+        creativeRow.addView(button("Add text") { addTextLayer() }, weighted())
+        controls.addView(creativeRow)
         scroll.addView(controls)
         root.addView(scroll, LinearLayout.LayoutParams(-1, dp(255)))
         setContentView(root)
@@ -188,10 +194,58 @@ class MainActivity : ComponentActivity() {
         }
         if (vignette != 0f) ImageAlgorithms.vignette(effected, vignette)
         val transform = Matrix().apply { postRotate(rotation); if (flipped) postScale(-1f, 1f) }
-        val result = Bitmap.createBitmap(effected, 0, 0, effected.width, effected.height, transform, true)
+        var result = Bitmap.createBitmap(effected, 0, 0, effected.width, effected.height, transform, true)
         if (base !== source && !base.isRecycled) base.recycle()
         if (effected !== result && !effected.isRecycled) effected.recycle()
+        val ratio = cropRatio
+        if (ratio != null && ratio > 0f) {
+            val currentRatio = result.width.toFloat() / result.height
+            val cropW: Int
+            val cropH: Int
+            if (currentRatio > ratio) { cropH = result.height; cropW = (cropH * ratio).toInt().coerceIn(1, result.width) }
+            else { cropW = result.width; cropH = (cropW / ratio).toInt().coerceIn(1, result.height) }
+            val cropped = Bitmap.createBitmap(result, (result.width - cropW) / 2, (result.height - cropH) / 2, cropW, cropH)
+            if (cropped !== result && !result.isRecycled) result.recycle()
+            result = cropped
+        }
+        if (textLayers.isNotEmpty()) {
+            val withText = result.copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = Canvas(withText)
+            textLayers.forEachIndexed { index, label ->
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.WHITE
+                    textSize = maxOf(28f, result.width * 0.055f)
+                    textAlign = Paint.Align.CENTER
+                    setShadowLayer(4f, 2f, 2f, Color.BLACK)
+                }
+                canvas.drawText(label, result.width / 2f, result.height * (0.8f - index * 0.08f), paint)
+            }
+            if (!result.isRecycled) result.recycle()
+            result = withText
+        }
         return result
+    }
+
+    private fun showCropOptions() {
+        val options = arrayOf("Reset crop", "Square 1:1", "Portrait 4:5", "Landscape 16:9")
+        android.app.AlertDialog.Builder(this).setTitle("Center crop").setItems(options) { _, which ->
+            cropRatio = when (which) { 0 -> null; 1 -> 1f; 2 -> 4f / 5f; else -> 16f / 9f }
+            renderPreview()
+        }.show()
+    }
+
+    private fun addTextLayer() {
+        val input = EditText(this).apply { hint = "Text to overlay on photo" }
+        android.app.AlertDialog.Builder(this).setTitle("Add text layer").setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Add") { _, _ ->
+                val value = input.text.toString().trim()
+                if (value.isNotEmpty()) {
+                    textLayers.add(value)
+                    renderPreview()
+                    status.text = "Text overlay added • " + textLayers.size + " layer(s)"
+                }
+            }.show()
     }
 
     private fun saveImage() {
