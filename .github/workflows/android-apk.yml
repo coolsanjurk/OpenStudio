@@ -9,8 +9,17 @@ permissions:
   contents: read
 
 jobs:
+  privacy-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Check privacy-sensitive Android settings
+        run: python3 scripts/privacy_guard.py
+
   build:
     runs-on: ubuntu-latest
+    needs: privacy-guard
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
