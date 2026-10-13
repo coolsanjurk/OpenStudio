@@ -34,6 +34,41 @@ class MainActivity : ComponentActivity() {
     private var vignette = 0f
     private var cropRatio: Float? = null
     private val textLayers = mutableListOf<String>()
+    private val editHistory = EditHistory<EditorState>()
+
+    private data class EditorState(
+        val rotation: Float, val flipped: Boolean, val brightness: Float, val contrast: Float,
+        val saturation: Float, val warmth: Float, val sharpness: Float, val vignette: Float,
+        val cropRatio: Float?, val textLayers: List<String>
+    )
+
+    private fun currentEditorState() = EditorState(
+        rotation, flipped, brightness, contrast, saturation, warmth, sharpness, vignette,
+        cropRatio, textLayers.toList()
+    )
+
+    private fun recordUndo() {
+        if (::preview.isInitialized && original != null) editHistory.record(currentEditorState())
+    }
+
+    private fun applyEditorState(state: EditorState) {
+        rotation = state.rotation; flipped = state.flipped; brightness = state.brightness
+        contrast = state.contrast; saturation = state.saturation; warmth = state.warmth
+        sharpness = state.sharpness; vignette = state.vignette; cropRatio = state.cropRatio
+        textLayers.clear(); textLayers.addAll(state.textLayers)
+        renderPreview()
+        status.text = "Edit restored"
+    }
+
+    private fun undoEdit() {
+        val previous = editHistory.undo(currentEditorState())
+        if (previous == null) toast("Nothing to undo.") else applyEditorState(previous)
+    }
+
+    private fun redoEdit() {
+        val next = editHistory.redo(currentEditorState())
+        if (next == null) toast("Nothing to redo.") else applyEditorState(next)
+    }
 
     private val pickImage = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -41,7 +76,7 @@ class MainActivity : ComponentActivity() {
         if (uri != null) try {
             contentResolver.openInputStream(uri)?.use { original = BitmapFactory.decodeStream(it) }
             if (original == null) throw IOException("Image decoder returned no image")
-            rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f; sharpness = 0f; vignette = 0f; cropRatio = null; textLayers.clear()
+            rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f; sharpness = 0f; vignette = 0f; cropRatio = null; textLayers.clear(); editHistory.clear()
             renderPreview()
             status.text = "Photo loaded — edits stay on your device."
         } catch (_: Exception) { toast("Could not open this photo.") }
@@ -78,21 +113,26 @@ class MainActivity : ComponentActivity() {
         })
         val scroll = ScrollView(this)
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        controls.addView(sliderRow("Brightness", -100, 100, 0) { brightness = it / 100f; renderPreview() })
-        controls.addView(sliderRow("Contrast", 50, 200, 100) { contrast = it / 100f; renderPreview() })
-        controls.addView(sliderRow("Saturation", 0, 200, 100) { saturation = it / 100f; renderPreview() })
-        controls.addView(sliderRow("Warmth", -50, 50, 0) { warmth = it.toFloat(); renderPreview() })
-        controls.addView(sliderRow("Sharpen", 0, 100, 0) { sharpness = it / 100f; renderPreview() })
-        controls.addView(sliderRow("Vignette", -100, 100, 0) { vignette = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Brightness", -100, 100, 0, beforeChange = { recordUndo() }) { brightness = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Contrast", 50, 200, 100, beforeChange = { recordUndo() }) { contrast = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Saturation", 0, 200, 100, beforeChange = { recordUndo() }) { saturation = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Warmth", -50, 50, 0, beforeChange = { recordUndo() }) { warmth = it.toFloat(); renderPreview() })
+        controls.addView(sliderRow("Sharpen", 0, 100, 0, beforeChange = { recordUndo() }) { sharpness = it / 100f; renderPreview() })
+        controls.addView(sliderRow("Vignette", -100, 100, 0, beforeChange = { recordUndo() }) { vignette = it / 100f; renderPreview() })
         val transformRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        transformRow.addView(button("Rotate") { rotation = (rotation + 90f) % 360f; renderPreview() }, weighted())
-        transformRow.addView(button("Flip") { flipped = !flipped; renderPreview() }, weighted())
+        transformRow.addView(button("Rotate") { recordUndo(); rotation = (rotation + 90f) % 360f; renderPreview() }, weighted())
+        transformRow.addView(button("Flip") { recordUndo(); flipped = !flipped; renderPreview() }, weighted())
         transformRow.addView(button("Reset") {
+            recordUndo()
             brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f
             sharpness = 0f; vignette = 0f; cropRatio = null; textLayers.clear()
             rotation = 0f; flipped = false; renderPreview(); toast("Edits reset")
         }, weighted())
         controls.addView(transformRow)
+        val historyRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        historyRow.addView(button("Undo") { undoEdit() }, weighted())
+        historyRow.addView(button("Redo") { redoEdit() }, weighted())
+        controls.addView(historyRow)
         val creativeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         creativeRow.addView(button("Crop") { showCropOptions() }, weighted())
         creativeRow.addView(button("Add text") { addTextLayer() }, weighted())
@@ -127,7 +167,7 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 
-    private fun sliderRow(label: String, min: Int, max: Int, initial: Int, changed: (Int) -> Unit): View {
+    private fun sliderRow(label: String, min: Int, max: Int, beforeChange: () -> Unit = {}, changed: (Int) -> Unit): View {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val caption = TextView(this).apply { text = "$label: $initial"; textSize = 14f; setTextColor(Color.WHITE) }
         val seek = SeekBar(this).apply {
@@ -137,7 +177,7 @@ class MainActivity : ComponentActivity() {
                     val value = progress + min
                     caption.text = "$label: $value"; changed(value)
                 }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStartTrackingTouch(sb: SeekBar?) { beforeChange() }
                 override fun onStopTrackingTouch(sb: SeekBar?) {}
             })
         }
@@ -229,6 +269,7 @@ class MainActivity : ComponentActivity() {
     private fun showCropOptions() {
         val options = arrayOf("Reset crop", "Square 1:1", "Portrait 4:5", "Landscape 16:9")
         android.app.AlertDialog.Builder(this).setTitle("Center crop").setItems(options) { _, which ->
+            recordUndo()
             cropRatio = when (which) { 0 -> null; 1 -> 1f; 2 -> 4f / 5f; else -> 16f / 9f }
             renderPreview()
         }.show()
@@ -241,6 +282,7 @@ class MainActivity : ComponentActivity() {
             .setPositiveButton("Add") { _, _ ->
                 val value = input.text.toString().trim()
                 if (value.isNotEmpty()) {
+                    recordUndo()
                     textLayers.add(value)
                     renderPreview()
                     status.text = "Text overlay added • " + textLayers.size + " layer(s)"
