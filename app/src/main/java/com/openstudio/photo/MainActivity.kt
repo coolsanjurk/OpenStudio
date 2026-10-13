@@ -24,6 +24,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var preview: ImageView
     private lateinit var status: TextView
     private var original: Bitmap? = null
+    // Keep track of the generated preview so its native pixel memory can be released
+    // when the next slider movement produces a replacement.
+    private var renderedPreview: Bitmap? = null
     private var rotation = 0f
     private var flipped = false
     private var brightness = 0f
@@ -74,15 +77,29 @@ class MainActivity : ComponentActivity() {
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) try {
-            contentResolver.openInputStream(uri)?.use { original = BitmapFactory.decodeStream(it) }
-            if (original == null) throw IOException("Image decoder returned no image")
+            val decoded = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                ?: throw IOException("Image decoder returned no image")
+            val previousOriginal = original
+            original = decoded
             rotation = 0f; flipped = false; brightness = 0f; contrast = 1f; saturation = 1f; warmth = 0f; sharpness = 0f; vignette = 0f; cropRatio = null; textLayers.clear(); editHistory.clear()
             renderPreview()
+            if (previousOriginal != null && previousOriginal !== decoded && !previousOriginal.isRecycled) previousOriginal.recycle()
             status.text = "Photo loaded — edits stay on your device."
         } catch (_: Exception) { toast("Could not open this photo.") }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); buildUi() }
+
+    override fun onDestroy() {
+        // Avoid retaining full-size pixel buffers after the editor is closed.
+        val previewBitmap = renderedPreview
+        if (previewBitmap != null && previewBitmap !== original && !previewBitmap.isRecycled) previewBitmap.recycle()
+        renderedPreview = null
+        val source = original
+        if (source != null && !source.isRecycled) source.recycle()
+        original = null
+        super.onDestroy()
+    }
 
     private fun buildUi() {
         val root = LinearLayout(this).apply {
@@ -186,9 +203,29 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun renderPreview() {
-        val source = original ?: run { preview.setImageDrawable(null); status.text = "Tap Open photo to begin."; return }
-        try { preview.setImageBitmap(processedBitmap(source, 1600)) }
-        catch (_: Exception) { preview.setImageBitmap(source); status.text = "Preview issue — original photo retained." }
+        val source = original ?: run {
+            preview.setImageDrawable(null)
+            releaseRenderedPreview()
+            status.text = "Tap Open photo to begin."
+            return
+        }
+        try {
+            val next = processedBitmap(source, 1600)
+            val previous = renderedPreview
+            preview.setImageBitmap(next)
+            renderedPreview = next
+            if (previous != null && previous !== source && previous !== next && !previous.isRecycled) previous.recycle()
+        } catch (_: Exception) {
+            preview.setImageBitmap(source)
+            releaseRenderedPreview()
+            status.text = "Preview issue — original photo retained."
+        }
+    }
+
+    private fun releaseRenderedPreview() {
+        val previous = renderedPreview
+        renderedPreview = null
+        if (previous != null && previous !== original && !previous.isRecycled) previous.recycle()
     }
 
     private fun processedBitmap(source: Bitmap, maxDimension: Int? = null): Bitmap {
@@ -294,8 +331,9 @@ class MainActivity : ComponentActivity() {
         val source = original ?: run { toast("Open a photo first."); return }
         status.text = "Saving photo…"
         Thread {
+            var bitmap: Bitmap? = null
             try {
-                val bitmap = processedBitmap(source)
+                bitmap = processedBitmap(source)
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, "OpenStudio_" + System.currentTimeMillis() + ".jpg")
                     put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
@@ -309,10 +347,12 @@ class MainActivity : ComponentActivity() {
                 } ?: throw IOException("Could not write image")
                 values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
                 contentResolver.update(uri, values, null, null)
-                if (bitmap !== source && !bitmap.isRecycled) bitmap.recycle()
                 runOnUiThread { status.text = "Saved to Pictures/OpenStudio"; toast("Photo saved successfully") }
             } catch (e: Exception) {
                 runOnUiThread { status.text = "Save failed"; toast("Could not save: " + (e.message ?: "unknown error")) }
+            } finally {
+                val savedBitmap = bitmap
+                if (savedBitmap != null && savedBitmap !== source && !savedBitmap.isRecycled) savedBitmap.recycle()
             }
         }.start()
     }
