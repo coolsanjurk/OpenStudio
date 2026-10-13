@@ -167,7 +167,7 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 
-    private fun sliderRow(label: String, min: Int, max: Int, beforeChange: () -> Unit = {}, changed: (Int) -> Unit): View {
+    private fun sliderRow(label: String, min: Int, max: Int, initial: Int, beforeChange: () -> Unit = {}, changed: (Int) -> Unit): View {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val caption = TextView(this).apply { text = "$label: $initial"; textSize = 14f; setTextColor(Color.WHITE) }
         val seek = SeekBar(this).apply {
