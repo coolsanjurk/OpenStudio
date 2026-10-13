@@ -36,12 +36,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
+      - name: Run Rust unit tests
+        run: cargo test --manifest-path rust/openstudio_native/Cargo.toml
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Build Rust native libraries
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.3.11579264
-        run: cargo ndk -t arm64-v8a -t x86_64 -o app/src/main/jniLibs build --release --manifest-path rust/openstudio_native/Cargo.toml
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/26.3.11579264"
+          cargo ndk -t arm64-v8a -t x86_64 -o app/src/main/jniLibs build --release --manifest-path rust/openstudio_native/Cargo.toml
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
