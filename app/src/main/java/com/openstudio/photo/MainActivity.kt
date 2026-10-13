@@ -333,7 +333,8 @@ class MainActivity : ComponentActivity() {
         Thread {
             var bitmap: Bitmap? = null
             try {
-                bitmap = processedBitmap(source)
+                val outputBitmap = processedBitmap(source)
+                bitmap = outputBitmap
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, "OpenStudio_" + System.currentTimeMillis() + ".jpg")
                     put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
@@ -343,7 +344,7 @@ class MainActivity : ComponentActivity() {
                 val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                     ?: throw IOException("Could not create image")
                 contentResolver.openOutputStream(uri)?.use {
-                    if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)) throw IOException("Image encoding failed")
+                    if (!outputBitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)) throw IOException("Image encoding failed")
                 } ?: throw IOException("Could not write image")
                 values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
                 contentResolver.update(uri, values, null, null)
