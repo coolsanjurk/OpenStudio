@@ -146,19 +146,35 @@ class MainActivity : ComponentActivity() {
             Bitmap.createScaledBitmap(source, (source.width * scale).roundToInt().coerceAtLeast(1),
                 (source.height * scale).roundToInt().coerceAtLeast(1), true)
         } else source
-        val matrix = ColorMatrix()
-        matrix.setSaturation(saturation)
-        matrix.postConcat(ColorMatrix(floatArrayOf(
-            contrast, 0f, 0f, 0f, brightness * 255f + warmth,
-            0f, contrast, 0f, 0f, brightness * 255f,
-            0f, 0f, contrast, 0f, brightness * 255f - warmth,
-            0f, 0f, 0f, 1f, 0f
-        )))
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-            colorFilter = ColorMatrixColorFilter(matrix)
-        }
         val corrected = Bitmap.createBitmap(base.width, base.height, Bitmap.Config.ARGB_8888)
-        Canvas(corrected).drawBitmap(base, 0f, 0f, paint)
+        if (NativeImageProcessor.isAvailable) {
+            // Process in row chunks to limit temporary memory use on high-resolution photos.
+            val chunkRows = 128
+            var top = 0
+            while (top < base.height) {
+                val rows = minOf(chunkRows, base.height - top)
+                val pixels = IntArray(base.width * rows)
+                base.getPixels(pixels, 0, base.width, 0, top, base.width, rows)
+                NativeImageProcessor.instance.nativeApplyFilters(
+                    pixels, brightness, contrast, saturation, warmth
+                )
+                corrected.setPixels(pixels, 0, base.width, 0, top, base.width, rows)
+                top += rows
+            }
+        } else {
+            val matrix = ColorMatrix()
+            matrix.setSaturation(saturation)
+            matrix.postConcat(ColorMatrix(floatArrayOf(
+                contrast, 0f, 0f, 0f, brightness * 255f + warmth,
+                0f, contrast, 0f, 0f, brightness * 255f,
+                0f, 0f, contrast, 0f, brightness * 255f - warmth,
+                0f, 0f, 0f, 1f, 0f
+            )))
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                colorFilter = ColorMatrixColorFilter(matrix)
+            }
+            Canvas(corrected).drawBitmap(base, 0f, 0f, paint)
+        }
         val transform = Matrix().apply { postRotate(rotation); if (flipped) postScale(-1f, 1f) }
         val result = Bitmap.createBitmap(corrected, 0, 0, corrected.width, corrected.height, transform, true)
         if (base !== source && !base.isRecycled) base.recycle()
